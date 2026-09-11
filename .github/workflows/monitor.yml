@@ -15,7 +15,8 @@ concurrency:
 jobs:
   monitor:
     runs-on: ubuntu-latest
-    timeout-minutes: 4
+    timeout-minutes: 8
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -29,7 +30,9 @@ jobs:
           cache: 'pip'
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: |
+          pip install -r requirements.txt
+          python -m playwright install --with-deps chromium
 
       - name: Run monitor
         env:
@@ -40,16 +43,13 @@ jobs:
       - name: Persist monitor state if changed
         if: always()
         run: |
-          if [ -f .monitor-state.json ] && ! git diff --quiet -- .monitor-state.json; then
+          if [ -f .monitor-state.json ]; then
             git config user.name "ozon-monitor-bot"
             git config user.email "actions@users.noreply.github.com"
             git add .monitor-state.json
-            git commit -m "chore: update monitor state" || true
-            git push || true
-          elif [ -f .monitor-state.json ] && [ -z "$(git ls-files .monitor-state.json)" ]; then
-            git config user.name "ozon-monitor-bot"
-            git config user.email "actions@users.noreply.github.com"
-            git add .monitor-state.json
-            git commit -m "chore: initialize monitor state" || true
-            git push || true
+            if ! git diff --cached --quiet; then
+              git commit -m "chore: update monitor state"
+              git pull --rebase
+              git push
+            fi
           fi
