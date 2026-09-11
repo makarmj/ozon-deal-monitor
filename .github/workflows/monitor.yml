@@ -1,0 +1,55 @@
+name: Ozon Deal Monitor
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ozon-deal-monitor
+  cancel-in-progress: false
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run monitor
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python monitor.py
+
+      - name: Persist monitor state if changed
+        if: always()
+        run: |
+          if [ -f .monitor-state.json ] && ! git diff --quiet -- .monitor-state.json; then
+            git config user.name "ozon-monitor-bot"
+            git config user.email "actions@users.noreply.github.com"
+            git add .monitor-state.json
+            git commit -m "chore: update monitor state" || true
+            git push || true
+          elif [ -f .monitor-state.json ] && [ -z "$(git ls-files .monitor-state.json)" ]; then
+            git config user.name "ozon-monitor-bot"
+            git config user.email "actions@users.noreply.github.com"
+            git add .monitor-state.json
+            git commit -m "chore: initialize monitor state" || true
+            git push || true
+          fi
