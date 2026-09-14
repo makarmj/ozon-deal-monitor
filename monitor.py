@@ -1,437 +1,182 @@
-import asyncio
 import hashlib
 import html
 import json
 import os
-import re
+import sys
 import time
-from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import quote
 
 import requests
-from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
 
+ACTOR_ID = "isolovyev~ru-marketplaces-price-monitor"
+APIFY_SYNC_URL = f"https://api.apify.com/v2/actors/{ACTOR_ID}/run-sync-get-dataset-items"
 STATE_PATH = Path(".monitor-state.json")
-BASE = "https://www.ozon.ru"
+MAX_ALERTS_PER_RUN = 12
 
-# The monitor runs every 5 minutes. PS5 is checked every run; other groups are
-# rotated to reduce load on Ozon while still checking the full watchlist often.
 RULES = [
-    {
-        "label": "PS5 Slim Digital",
-        "query": "PlayStation 5 Slim Digital CFI-2116B",
-        "max_price": 55000,
-        "min_price": 30000,
-        "include_any": ["playstation 5 slim", "ps5 slim"],
-        "include_one_of": ["digital", "цифров", "без дисковод", "cfi-21", "cfi-20"],
-        "priority": True,
-    },
-    {
-        "label": "MacBook Air M4",
-        "query": "MacBook Air M4 16GB",
-        "max_price": 100000,
-        "min_price": 45000,
-        "include_any": ["macbook air"],
-        "include_one_of": ["m4"],
-    },
-    {
-        "label": "MacBook Air M3",
-        "query": "MacBook Air M3 16GB",
-        "max_price": 90000,
-        "min_price": 45000,
-        "include_any": ["macbook air"],
-        "include_one_of": ["m3"],
-    },
-    {
-        "label": "MacBook Air M2",
-        "query": "MacBook Air M2 16GB",
-        "max_price": 80000,
-        "min_price": 40000,
-        "include_any": ["macbook air"],
-        "include_one_of": ["m2"],
-    },
-    {
-        "label": "MacBook Pro Apple Silicon",
-        "query": "MacBook Pro M4",
-        "max_price": 100000,
-        "min_price": 55000,
-        "include_any": ["macbook pro"],
-        "include_one_of": ["m4", "m3 pro", "m3 max", "m2 pro", "m2 max"],
-    },
-    {
-        "label": "RTX 5060 laptop",
-        "query": "ноутбук RTX 5060",
-        "max_price": 100000,
-        "min_price": 45000,
-        "include_any": ["rtx 5060", "geforce rtx 5060"],
-        "include_one_of": [],
-    },
-    {
-        "label": "RTX 4060 laptop",
-        "query": "ноутбук RTX 4060",
-        "max_price": 85000,
-        "min_price": 40000,
-        "include_any": ["rtx 4060", "geforce rtx 4060"],
-        "include_one_of": [],
-    },
-    {
-        "label": "ROG Ally Z1 Extreme",
-        "query": "ROG Ally Z1 Extreme",
-        "max_price": 60000,
-        "min_price": 30000,
-        "include_any": ["rog ally"],
-        "include_one_of": ["z1 extreme", "extreme"],
-    },
-    {
-        "label": "ROG Ally X",
-        "query": "ROG Ally X",
-        "max_price": 85000,
-        "min_price": 40000,
-        "include_any": ["rog ally x"],
-        "include_one_of": [],
-    },
-    {
-        "label": "Steam Deck OLED 512",
-        "query": "Steam Deck OLED 512GB",
-        "max_price": 65000,
-        "min_price": 30000,
-        "include_any": ["steam deck"],
-        "include_one_of": ["oled"],
-    },
-    {
-        "label": "Lenovo Legion Go",
-        "query": "Lenovo Legion Go",
-        "max_price": 75000,
-        "min_price": 30000,
-        "include_any": ["legion go"],
-        "include_one_of": [],
-    },
+    {"label":"PS5 Slim Digital","query":"PlayStation 5 Slim Digital","max_price":55000,"min_price":30000,
+     "include_any":["playstation 5","ps5"],"include_one_of":["digital","цифров","без дисковод"],"exclude":["disc drive","дисковод отдельно"]},
+    {"label":"MacBook Air M4","query":"MacBook Air M4 16GB","max_price":100000,"min_price":45000,
+     "include_any":["macbook air"],"include_one_of":["m4"],"exclude":["intel","восстановлен","refurb"]},
+    {"label":"MacBook Air M3","query":"MacBook Air M3 16GB","max_price":90000,"min_price":45000,
+     "include_any":["macbook air"],"include_one_of":["m3"],"exclude":["intel","восстановлен","refurb"]},
+    {"label":"MacBook Air M2","query":"MacBook Air M2 16GB","max_price":80000,"min_price":40000,
+     "include_any":["macbook air"],"include_one_of":["m2"],"exclude":["intel","восстановлен","refurb"]},
+    {"label":"MacBook Pro Apple Silicon","query":"MacBook Pro M4 16GB","max_price":100000,"min_price":55000,
+     "include_any":["macbook pro"],"include_one_of":["m4","m3","m2"],"exclude":["intel","восстановлен","refurb"]},
+    {"label":"RTX 5060 laptop","query":"ноутбук RTX 5060","max_price":100000,"min_price":45000,
+     "include_any":["rtx 5060","geforce rtx 5060"],"include_one_of":[],"exclude":["видеокарта отдельно"]},
+    {"label":"RTX 4060 laptop","query":"ноутбук RTX 4060","max_price":85000,"min_price":40000,
+     "include_any":["rtx 4060","geforce rtx 4060"],"include_one_of":[],"exclude":["видеокарта отдельно"]},
+    {"label":"ROG Ally Z1 Extreme","query":"ROG Ally Z1 Extreme","max_price":60000,"min_price":30000,
+     "include_any":["rog ally"],"include_one_of":["z1 extreme","extreme"],"exclude":[]},
+    {"label":"ROG Ally X","query":"ROG Ally X","max_price":85000,"min_price":40000,
+     "include_any":["rog ally x"],"include_one_of":[],"exclude":[]},
+    {"label":"Steam Deck OLED 512","query":"Steam Deck OLED 512GB","max_price":65000,"min_price":30000,
+     "include_any":["steam deck"],"include_one_of":["oled"],"exclude":[]},
+    {"label":"Lenovo Legion Go","query":"Lenovo Legion Go","max_price":75000,"min_price":30000,
+     "include_any":["legion go"],"include_one_of":[],"exclude":[]},
 ]
-
-PRICE_RE = re.compile(r"(?<!\d)(\d{1,3}(?:[\s\u00a0\u2009]\d{3})+|\d{4,6})\s*₽")
-BAD_PRICE_CONTEXT = ("в месяц", "/мес", "×", "балл", "кэшб", "скидк", "эконом")
-
+RULE_BY_QUERY = {r["query"].lower(): r for r in RULES}
 
 def load_state():
     if not STATE_PATH.exists():
-        return {"alerts": {}, "seen": {}, "run_number": 0}
+        return {"alerts": {}, "apify_initialized": False}
     try:
-        data = json.loads(STATE_PATH.read_text("utf-8"))
-        if not isinstance(data, dict):
-            raise ValueError
-        data.setdefault("alerts", {})
-        data.setdefault("seen", {})
-        data.setdefault("run_number", 0)
-        return data
+        s = json.loads(STATE_PATH.read_text("utf-8"))
+        if not isinstance(s, dict): raise ValueError
     except Exception:
-        return {"alerts": {}, "seen": {}, "run_number": 0}
-
+        s = {}
+    s.setdefault("alerts", {})
+    s.setdefault("apify_initialized", False)
+    return s
 
 def save_state(state):
-    cutoff = int(time.time()) - 7 * 24 * 3600
-    state["alerts"] = {
-        k: v for k, v in state.get("alerts", {}).items()
-        if isinstance(v, int) and v >= cutoff
-    }
-    seen = {}
-    for k, v in state.get("seen", {}).items():
-        if isinstance(v, dict) and v.get("ts", 0) >= cutoff:
-            seen[k] = v
-    state["seen"] = seen
-    STATE_PATH.write_text(
-        json.dumps(state, ensure_ascii=False, indent=2, sort_keys=True),
-        "utf-8",
-    )
-
-
-def telegram_chat_id(token):
-    explicit = os.getenv("TELEGRAM_CHAT_ID", "").strip()
-    if explicit:
-        return explicit
-    try:
-        r = requests.get(f"https://api.telegram.org/bot{token}/getUpdates", timeout=15)
-        r.raise_for_status()
-        for upd in reversed(r.json().get("result", [])):
-            msg = upd.get("message") or upd.get("channel_post")
-            cid = (msg or {}).get("chat", {}).get("id")
-            if cid is not None:
-                return str(cid)
-    except Exception as exc:
-        print(f"Telegram getUpdates failed: {exc}")
-    return ""
-
+    cutoff = int(time.time()) - 14*24*3600
+    state["alerts"] = {k:v for k,v in state.get("alerts",{}).items() if isinstance(v,int) and v >= cutoff}
+    STATE_PATH.write_text(json.dumps(state, ensure_ascii=False, indent=2, sort_keys=True), "utf-8")
 
 def send_telegram(token, chat_id, text):
-    r = requests.post(
-        f"https://api.telegram.org/bot{token}/sendMessage",
-        json={
-            "chat_id": chat_id,
-            "text": text,
-            "parse_mode": "HTML",
-            "disable_web_page_preview": False,
-        },
-        timeout=20,
-    )
+    r = requests.post(f"https://api.telegram.org/bot{token}/sendMessage",
+                      json={"chat_id":chat_id,"text":text,"parse_mode":"HTML","disable_web_page_preview":False},
+                      timeout=30)
     r.raise_for_status()
 
+def normalize(v): return " ".join(str(v or "").split())
 
-def normalize(s):
-    return re.sub(r"\s+", " ", (s or "")).strip()
-
-
-def canonical_product_url(href):
-    if href.startswith("/"):
-        href = BASE + href
-    return href.split("?")[0].split("#")[0]
-
-
-def extract_prices(text, min_price):
-    found = []
-    low = text.lower()
-    for match in PRICE_RE.finditer(text):
-        left = low[max(0, match.start() - 24):match.start()]
-        right = low[match.end():min(len(low), match.end() + 24)]
-        context = left + " " + right
-        if any(bad in context for bad in BAD_PRICE_CONTEXT):
-            continue
-        try:
-            price = int(re.sub(r"\D", "", match.group(1)))
-        except ValueError:
-            continue
-        if min_price <= price <= 300000:
-            found.append(price)
-    return sorted(set(found))
-
-
-def rule_matches(rule, text):
-    low = text.lower()
-    if rule["include_any"] and not any(term in low for term in rule["include_any"]):
-        return False
-    if rule["include_one_of"] and not any(term in low for term in rule["include_one_of"]):
-        return False
-    if "macbook" in low and (" intel " in f" {low} " or "восстановлен" in low or "refurb" in low):
-        return False
+def title_matches(rule, title):
+    low = title.lower()
+    if rule["include_any"] and not any(x in low for x in rule["include_any"]): return False
+    if rule["include_one_of"] and not any(x in low for x in rule["include_one_of"]): return False
+    if any(x in low for x in rule.get("exclude", [])): return False
     return True
 
+def as_price(v):
+    try: return int(round(float(v)))
+    except (TypeError, ValueError): return None
 
-def alert_message(rule, product, old_price=None):
-    price = product["price"]
-    title = product["title"]
-    url = product["url"]
-    delta = ""
-    if old_price and old_price > price:
-        delta = f"\n📉 Было: {old_price:,} ₽ → стало: <b>{price:,} ₽</b>"
-    msg = (
-        f"🔥 <b>{html.escape(rule['label'])}</b>\n"
-        f"<b>{price:,} ₽</b> — порог: {rule['max_price']:,} ₽"
-        f"{delta}\n"
-        f"{html.escape(title)}\n\n"
-        f'<a href="{html.escape(url)}">Открыть товар на Ozon</a>\n\n'
-        f"⚠️ Перед оплатой проверь продавца, состояние, пошлину, регион/ревизию и комплектацию."
-    )
-    return msg.replace(",", " ")
-
-
-def active_rules(run_number):
-    priority = [r for r in RULES if r.get("priority")]
-    normal = [r for r in RULES if not r.get("priority")]
-    # 5 rotating rules + priority every run; every normal rule gets checked
-    # roughly every 10 minutes over two consecutive runs.
-    half = (len(normal) + 1) // 2
-    group = normal[:half] if run_number % 2 == 0 else normal[half:]
-    return priority + group
-
-
-async def wait_for_real_page(page):
-    # Give the normal browser page time to execute its scripts.
-    for _ in range(10):
-        await page.wait_for_timeout(1000)
-        title = (await page.title()).lower()
-        body = (await page.locator("body").inner_text(timeout=5000)).lower()
-        blocked = (
-            "доступ ограничен" in body
-            or "access denied" in body
-            or "captcha" in body
-            or "проверяем ваш браузер" in body
-        )
-        if not blocked and ("ozon" in title or "/product/" in (await page.content())):
-            return True
-    return False
-
-
-async def fetch_search(page, rule):
-    url = f"{BASE}/search/?text={quote(rule['query'])}&from_global=true"
-    try:
-        response = await page.goto(url, wait_until="domcontentloaded", timeout=45000)
-    except PlaywrightTimeoutError:
-        return [], "navigation timeout"
-
-    status = response.status if response else 0
-    print(f"{rule['label']}: browser HTTP {status}")
-
-    if status in (401, 403, 429):
-        return [], f"browser HTTP {status}"
-
-    if not await wait_for_real_page(page):
-        return [], "Ozon anti-bot/challenge did not clear"
-
-    raw = await page.evaluate(
-        """() => {
-          const out = [];
-          const links = Array.from(document.querySelectorAll('a[href*="/product/"]'));
-          const seen = new Set();
-          for (const a of links) {
-            const href = a.href || a.getAttribute('href') || '';
-            if (!href || seen.has(href)) continue;
-            seen.add(href);
-
-            let node = a;
-            let best = (a.innerText || '').trim();
-            for (let i = 0; i < 7 && node; i++, node = node.parentElement) {
-              const t = (node.innerText || '').replace(/\\s+/g, ' ').trim();
-              if (t.length >= 30 && t.length <= 2500) best = t;
-              if (t.includes('₽') && t.length >= 60 && t.length <= 2500) {
-                best = t;
-                break;
-              }
-            }
-            out.push({
-              href,
-              title: (a.getAttribute('title') || a.getAttribute('aria-label') || a.innerText || '').trim(),
-              text: best
-            });
-            if (out.length >= 250) break;
-          }
-          return out;
-        }"""
-    )
-
-    products = {}
-    for item in raw:
-        card = normalize(item.get("text", ""))
-        if not rule_matches(rule, card):
-            continue
-        prices = extract_prices(card, rule["min_price"])
-        if not prices:
-            continue
-        price = min(prices)
-        if price > rule["max_price"]:
-            continue
-        product_url = canonical_product_url(item.get("href", ""))
-        if "/product/" not in product_url:
-            continue
-        title = normalize(item.get("title", ""))
-        if len(title) < 8:
-            title = card[:240]
-        products[product_url] = {
-            "url": product_url,
-            "title": title[:240],
-            "price": price,
+def build_actor_input():
+    return {
+        "mode":"monitor",
+        "platforms":["ozon"],
+        "queries":[r["query"] for r in RULES],
+        "maxPagesPerQuery":1,
+        "maxItemsPerQuery":15,
+        "alertOnly":True,
+        "flagUnderpriced":True,
+        "proxyConfiguration":{
+            "useApifyProxy":True,
+            "apifyProxyGroups":["RESIDENTIAL"],
+            "apifyProxyCountry":"RU"
         }
+    }
 
-    return sorted(products.values(), key=lambda x: x["price"])[:10], ""
+def run_apify(token):
+    params={"token":token,"clean":"true","format":"json"}
+    try:
+        r=requests.post(APIFY_SYNC_URL, params=params, json=build_actor_input(), timeout=295)
+    except requests.Timeout:
+        raise RuntimeError("Apify Actor timed out")
+    if r.status_code != 200:
+        raise RuntimeError(f"Apify HTTP {r.status_code}: {r.text[:1200]}")
+    data=r.json()
+    if not isinstance(data,list):
+        raise RuntimeError(f"Unexpected Apify response: {str(data)[:500]}")
+    return data
 
+def find_rule(item):
+    q=normalize(item.get("query")).lower()
+    if q in RULE_BY_QUERY: return RULE_BY_QUERY[q]
+    title=normalize(item.get("title"))
+    matches=[r for r in RULES if title_matches(r,title)]
+    return matches[0] if len(matches)==1 else None
 
-async def main():
-    token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-    chat_id = os.getenv("TELEGRAM_CHAT_ID", "").strip()
-    if not token:
-        raise SystemExit("TELEGRAM_BOT_TOKEN secret is missing")
-    if not chat_id:
-        chat_id = telegram_chat_id(token)
-    if not chat_id:
-        raise SystemExit("Telegram chat not found")
+def format_alert(rule,item):
+    title=normalize(item.get("title")); url=normalize(item.get("url"))
+    price=as_price(item.get("price")); prev=as_price(item.get("previousPrice"))
+    change=normalize(item.get("changeType")).lower()
+    lines=[]
+    if prev and prev>price: lines.append(f"📉 Было: {prev:,} ₽ → стало: <b>{price:,} ₽</b>")
+    elif change=="new": lines.append("🆕 Новая карточка в выдаче")
+    if item.get("isUnderpriced"): lines.append("🚩 Actor отметил цену как аномально низкую")
+    extra=("\n".join(lines)+"\n") if lines else ""
+    return (f"🔥 <b>{html.escape(rule['label'])}</b>\n"
+            f"<b>{price:,} ₽</b> — наш порог: {rule['max_price']:,} ₽\n"
+            f"{extra}{html.escape(title)}\n\n"
+            f'<a href="{html.escape(url)}">Открыть товар на Ozon</a>\n\n'
+            "⚠️ Перед оплатой проверь продавца, состояние, регион/ревизию, комплектацию, цену по Ozon Карте и возможную пошлину.").replace(","," ")
 
-    state = load_state()
-    run_number = int(state.get("run_number", 0))
-    rules = active_rules(run_number)
-    first_run = not bool(state.get("seen"))
+def main():
+    apify=os.getenv("APIFY_TOKEN","").strip()
+    tg=os.getenv("TELEGRAM_BOT_TOKEN","").strip()
+    chat=os.getenv("TELEGRAM_CHAT_ID","").strip()
+    missing=[n for n,v in [("APIFY_TOKEN",apify),("TELEGRAM_BOT_TOKEN",tg),("TELEGRAM_CHAT_ID",chat)] if not v]
+    if missing: raise SystemExit("Missing GitHub Actions secret(s): "+", ".join(missing))
 
-    total_alerts = 0
-    total_errors = 0
-    now = int(time.time())
+    state=load_state(); first=not state.get("apify_initialized")
+    print("Starting Apify Ozon monitor...")
+    items=run_apify(apify)
+    print(f"Apify returned {len(items)} changed/new dataset item(s).")
 
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(
-            headless=True,
-            args=["--no-sandbox", "--disable-dev-shm-usage"],
-        )
-        context = await browser.new_context(
-            locale="ru-RU",
-            timezone_id="Europe/Moscow",
-            viewport={"width": 1440, "height": 1000},
-            user_agent=(
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/140.0.0.0 Safari/537.36"
-            ),
-            extra_http_headers={"Accept-Language": "ru-RU,ru;q=0.9,en;q=0.7"},
-        )
-        page = await context.new_page()
+    candidates=[]
+    for item in items:
+        if normalize(item.get("platform")).lower() not in ("","ozon"): continue
+        rule=find_rule(item)
+        if not rule: continue
+        title=normalize(item.get("title")); price=as_price(item.get("price"))
+        change=normalize(item.get("changeType")).lower()
+        if not title or price is None or not title_matches(rule,title): continue
+        if not (rule["min_price"] <= price <= rule["max_price"]): continue
+        if change and change not in ("new","price_down"): continue
+        candidates.append((price,rule,item))
 
-        # Warm up the browser session once.
-        try:
-            await page.goto(BASE, wait_until="domcontentloaded", timeout=45000)
-            await wait_for_real_page(page)
-        except Exception as exc:
-            print(f"Warmup warning: {exc}")
+    candidates.sort(key=lambda x:x[0])
+    now=int(time.time()); sent=0
+    for price,rule,item in candidates:
+        if sent>=MAX_ALERTS_PER_RUN: break
+        url=normalize(item.get("url"))
+        identity=url or f"{rule['label']}|{normalize(item.get('title'))}"
+        fp=hashlib.sha1(f"{identity}|{price}".encode()).hexdigest()
+        if fp in state["alerts"]: continue
+        send_telegram(tg,chat,format_alert(rule,item))
+        state["alerts"][fp]=now; sent+=1
+        print(f"Alert sent: {rule['label']} — {price} ₽ — {url}")
 
-        for idx, rule in enumerate(rules):
-            if idx:
-                await page.wait_for_timeout(1300)
-            try:
-                products, error = await fetch_search(page, rule)
-                if error:
-                    total_errors += 1
-                    print(f"{rule['label']} error: {error}")
-                    continue
+    if first:
+        send_telegram(tg,chat,
+            "✅ <b>Ozon-монитор подключён через Apify.</b>\n"
+            f"Первый проход завершён. Actor вернул {len(items)} новых/изменённых карточек; "
+            f"подходящих уведомлений отправлено: {sent}.")
 
-                for product in products:
-                    url = product["url"]
-                    price = product["price"]
-                    old = state["seen"].get(url, {})
-                    old_price = old.get("price")
-                    state["seen"][url] = {"price": price, "ts": now}
-
-                    # On the first successful scan, build baseline silently.
-                    if first_run:
-                        continue
-
-                    is_new_good_deal = not old
-                    is_price_drop = isinstance(old_price, int) and price < old_price
-                    if not (is_new_good_deal or is_price_drop):
-                        continue
-
-                    fingerprint = hashlib.sha1(f"{url}|{price}".encode()).hexdigest()
-                    if fingerprint in state["alerts"]:
-                        continue
-
-                    send_telegram(token, chat_id, alert_message(rule, product, old_price))
-                    state["alerts"][fingerprint] = now
-                    total_alerts += 1
-                    print(f"Alert sent: {rule['label']} {price} {url}")
-
-            except Exception as exc:
-                total_errors += 1
-                print(f"{rule['label']} exception: {type(exc).__name__}: {exc}")
-
-        await browser.close()
-
-    state["run_number"] = run_number + 1
-    state["last_run_utc"] = datetime.now(timezone.utc).isoformat()
-    state["last_run_alerts"] = total_alerts
-    state["last_run_errors"] = total_errors
+    state["apify_initialized"]=True
+    state["last_apify_run_unix"]=now
+    state["last_apify_items"]=len(items)
+    state["last_alerts_sent"]=sent
     save_state(state)
-    print(
-        f"Finished: {total_alerts} alerts, {total_errors} rule errors, "
-        f"first_run={first_run}, checked_rules={len(rules)}"
-    )
+    print(f"Finished: {sent} alerts sent; {len(items)} changed/new item(s) returned by Apify.")
 
-    # Make anti-bot failure visible as a failed workflow rather than a false green check.
-    if total_errors == len(rules):
-        raise SystemExit("All Ozon browser checks failed; likely IP/anti-bot blocking.")
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
+if __name__=="__main__":
+    try: main()
+    except Exception as exc:
+        print(f"FATAL: {type(exc).__name__}: {exc}", file=sys.stderr)
+        raise
