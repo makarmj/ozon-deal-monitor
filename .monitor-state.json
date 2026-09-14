@@ -1,10 +1,14 @@
 {
-  "alerts": {},
+  "alerts": {
+    "0b5c40ee4353ecc43cd6b7181246484118926ed8": 1789422589,
+    "b459ad4d82eca497803e6fc748bd20ba2467c0e4": 1789422589,
+    "d968dc2b025171261a8f188a69992a0570e598e5": 1789422589
+  },
   "apify_initialized": true,
   "initialized": true,
-  "last_alerts_sent": 0,
-  "last_apify_items": 150,
-  "last_apify_run_unix": 1789407371,
+  "last_alerts_sent": 3,
+  "last_apify_items": 351,
+  "last_apify_run_unix": 1789422589,
   "last_run_alerts": 0,
   "last_run_errors": 6,
   "last_run_utc": "2026-09-14T16:41:15.501996+00:00",
