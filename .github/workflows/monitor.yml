@@ -2,7 +2,7 @@ name: Ozon Deal Monitor
 
 on:
   schedule:
-    - cron: '*/5 * * * *'
+    - cron: '3-53/10 * * * *'
   workflow_dispatch:
 
 permissions:
