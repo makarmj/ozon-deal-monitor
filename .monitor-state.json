@@ -1,6 +1,10 @@
 {
   "alerts": {},
+  "apify_initialized": true,
   "initialized": true,
+  "last_alerts_sent": 0,
+  "last_apify_items": 150,
+  "last_apify_run_unix": 1789407371,
   "last_run_alerts": 0,
   "last_run_errors": 6,
   "last_run_utc": "2026-09-14T16:41:15.501996+00:00",
